@@ -1,0 +1,8 @@
+{
+  "name": "Historian: Cinematic Movie Director",
+  "description": "Historical short-film production studio powered by Gemini 3 and Veo 3.1.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
