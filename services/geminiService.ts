@@ -4,14 +4,13 @@ import { Storyboard, Scene, TelopStyle, VisualStyle } from "../types";
 
 const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY as string });
 
-const withRetry = async <T>(fn: () => Promise<T>, retries = 3, delay = 3000): Promise<T> => {
+const withRetry = async <T>(fn: () => Promise<T>, retries = 3, delay = 5000): Promise<T> => {
   try {
     return await fn();
   } catch (error: any) {
     const errorMsg = error.message || "";
     const errorStatus = error.status || "";
     
-    // APIキー関連のエラーハンドリング
     if (errorMsg.includes("Requested entity was not found") || errorMsg.includes("API_KEY_INVALID")) {
       if (window.aistudio?.openSelectKey) {
         await window.aistudio.openSelectKey();
@@ -19,20 +18,18 @@ const withRetry = async <T>(fn: () => Promise<T>, retries = 3, delay = 3000): Pr
       throw new Error("APIキーが無効、または未選択です。再設定してください。");
     }
 
-    // クォータ（制限）エラーの判定
     const isQuotaError = errorMsg.includes('429') || 
                         errorStatus === 'RESOURCE_EXHAUSTED' || 
                         error.status === 429 || 
                         errorMsg.includes('Quota exceeded');
 
     if (isQuotaError) {
-      // 「limit: 0」や「per_day」が含まれる場合、リトライしても無駄な可能性が高い
       if (errorMsg.includes('limit: 0') || errorMsg.includes('per_day') || errorMsg.includes('daily limit')) {
-        throw new Error("1日あたりのAPI利用制限（クォータ）に達しました。Google AI Studioの設定で課金プランを確認するか、明日までお待ちください。");
+        throw new Error("1日あたりのAPI利用制限（クォータ）に達しました。Flashモデルに変更しましたが、プロジェクトの設定で課金が有効でない場合、制限が厳しいことがあります。Google AI Studioでプランを確認してください。");
       }
 
       if (retries > 0) {
-        console.warn(`Quota hit, retrying in ${delay}ms... (Remaining retries: ${retries})`, error);
+        console.warn(`Quota hit, retrying in ${delay}ms... (Remaining retries: ${retries})`);
         await new Promise(resolve => setTimeout(resolve, delay));
         return withRetry(fn, retries - 1, delay * 2);
       }
@@ -52,26 +49,25 @@ export const generateStoryboard = async (topic: string, visualStyle: VisualStyle
   2. STYLE: Witty, slightly humorous, but deeply insightful.
   3. STRUCTURE: Exactly 5 scenes.
   4. LANGUAGE: Japanese narration/telops, detailed English image/motion prompts.
-  5. SAFETY: Avoid any violence, hate speech, or sensitive content in prompts.
+  5. SAFETY: Avoid any violence, hate speech, or sensitive content.
   6. IMAGE PROMPTS: Must be descriptive, cinematic.
-  7. VISUAL STYLE: ${visualStyle === 'illustration' ? 'High-quality Japanese hand-drawn anime/manga art, vibrant watercolor style' : 'Photorealistic cinematic historical reconstruction'}.`;
+  7. VISUAL STYLE: ${visualStyle === 'illustration' ? 'High-quality Japanese anime art' : 'Photorealistic cinematic historical reconstruction'}.`;
 
+  // Flashモデルに変更することで制限を回避しやすくする
   const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
+    model: 'gemini-3-flash-preview',
     contents: prompt,
     config: {
-      systemInstruction: `You are an expert film director. Visual style: ${visualStyle}. Output JSON only. 'subject' is the short name of the figure. 'motion_prompt' must describe dynamic camera movements like 'dramatic zoom-in' or 'slow sweeping pan'.`,
+      systemInstruction: `You are an expert film director. Visual style: ${visualStyle}. Output JSON only. 'subject' is the short name of the figure. 'motion_prompt' must describe dynamic camera movements.`,
       responseMimeType: "application/json",
       responseSchema: {
         type: Type.OBJECT,
         properties: {
           title: { type: Type.STRING },
           subject: { type: Type.STRING },
-          bgm_style: { type: Type.STRING, description: "One of: epic, sad, peaceful, suspense" },
+          bgm_style: { type: Type.STRING },
           scenes: {
             type: Type.ARRAY,
-            minItems: 5,
-            maxItems: 5,
             items: {
               type: Type.OBJECT,
               properties: {
@@ -80,7 +76,7 @@ export const generateStoryboard = async (topic: string, visualStyle: VisualStyle
                 image_prompt: { type: Type.STRING },
                 motion_prompt: { type: Type.STRING },
                 telop: { type: Type.STRING },
-                telop_style: { type: Type.STRING, description: "One of: default, highlight" }
+                telop_style: { type: Type.STRING }
               },
               required: ["time_range", "narration", "image_prompt", "motion_prompt", "telop", "telop_style"]
             }
@@ -99,44 +95,27 @@ export const generateStoryboard = async (topic: string, visualStyle: VisualStyle
 export const generateImageForScene = async (prompt: string, style: VisualStyle): Promise<string> => {
   const ai = getAI();
   const styleInstruction = style === 'illustration' 
-    ? "Masterpiece, high-quality Japanese anime illustration, hand-drawn art, clean lines, beautiful lighting, vibrant watercolor colors, professional digital art."
-    : "8k resolution, photorealistic cinematic movie frame, historical atmosphere, dramatic lighting, sharp focus, masterpiece, high detail.";
+    ? "Masterpiece, high-quality Japanese anime illustration, hand-drawn art."
+    : "8k resolution, photorealistic cinematic movie frame, historical atmosphere.";
 
-  try {
-    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: { parts: [{ text: `Create an image for this historical scene: ${prompt}. Style: ${styleInstruction}` }] },
-      config: { imageConfig: { aspectRatio: "9:16" } }
-    }));
+  const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
+    model: 'gemini-2.5-flash-image',
+    contents: { parts: [{ text: `Create an image for this historical scene: ${prompt}. Style: ${styleInstruction}` }] },
+    config: { imageConfig: { aspectRatio: "9:16" } }
+  }));
 
-    const part = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-    if (part?.inlineData) {
-      return `data:image/png;base64,${part.inlineData.data}`;
-    }
-
-    const finishReason = response.candidates?.[0]?.finishReason;
-    if (finishReason === 'SAFETY') {
-      throw new Error("不適切なコンテンツとしてブロックされました。プロンプトを調整してください。");
-    }
-    
-    throw new Error(`画像生成に失敗しました。(Reason: ${finishReason || 'Unknown'})`);
-  } catch (err: any) {
-    console.error("Image Generation Error Details:", err);
-    throw err;
-  }
+  const part = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+  if (part?.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
+  throw new Error("画像生成に失敗しました。");
 };
 
 export const generateVideoForScene = async (base64Image: string, motionPrompt: string): Promise<string> => {
-  if (!await (window as any).aistudio.hasSelectedApiKey()) {
-    await (window as any).aistudio.openSelectKey();
-  }
-
   const ai = getAI();
   const pureBase64 = base64Image.split(',')[1];
   
   let operation: any = await withRetry(() => ai.models.generateVideos({
     model: 'veo-3.1-fast-generate-preview',
-    prompt: `${motionPrompt}. Highly dynamic cinematic camera motion, smooth transitions.`,
+    prompt: `${motionPrompt}. Cinematic camera motion.`,
     image: { imageBytes: pureBase64, mimeType: 'image/png' },
     config: { numberOfVideos: 1, resolution: '1080p', aspectRatio: '9:16' }
   }));
@@ -148,7 +127,6 @@ export const generateVideoForScene = async (base64Image: string, motionPrompt: s
 
   const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
   if (!downloadLink) throw new Error("ビデオ生成に失敗しました。");
-  
   const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
   const blob = await response.blob();
   return URL.createObjectURL(blob);
@@ -158,7 +136,7 @@ export const generateAudioForScene = async (text: string): Promise<{ audioUrl: s
   const ai = getAI();
   const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
     model: "gemini-2.5-flash-preview-tts",
-    contents: [{ parts: [{ text: `重厚な歴史ドキュメンタリー風のナレーション：${text}` }] }],
+    contents: [{ parts: [{ text: `ナレーション：${text}` }] }],
     config: {
       responseModalities: [Modality.AUDIO],
       speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
