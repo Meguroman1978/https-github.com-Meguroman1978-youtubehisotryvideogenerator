@@ -35,6 +35,10 @@ export interface YouTubeMetadata {
   privacyStatus: 'private' | 'unlisted' | 'public';
 }
 
+export interface YouTubeConfig {
+  clientId: string;
+}
+
 export interface AppState {
   isGeneratingStoryboard: boolean;
   isGeneratingImages: boolean;
