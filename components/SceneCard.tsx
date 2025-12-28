@@ -16,12 +16,13 @@ const SceneCard: React.FC<SceneCardProps> = ({ scene, index, isGenerating, isAct
         isActive ? 'border-amber-500/50 shadow-lg shadow-amber-500/10' : 'border-gray-800 hover:border-gray-700'
       }`}
     >
-      <div className="flex-none md:w-80 h-48 md:h-52 bg-black rounded-md overflow-hidden relative border border-gray-800">
+      <div className="flex-none md:w-80 h-48 md:h-52 bg-black rounded-md overflow-hidden relative border border-white/10">
         {scene.imageUrl ? (
           <img 
             src={scene.imageUrl} 
             alt={`Scene ${index + 1}`} 
             className="w-full h-full object-cover transition-transform duration-1000 group-hover:scale-105"
+            style={{ imageRendering: 'auto' }}
           />
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center gap-4 text-gray-600">
@@ -36,15 +37,15 @@ const SceneCard: React.FC<SceneCardProps> = ({ scene, index, isGenerating, isAct
           </div>
         )}
         
-        {/* Overlay for Time Range */}
-        <div className="absolute top-2 left-2 px-2 py-1 bg-black/70 text-[10px] text-gray-300 font-mono tracking-tighter rounded">
+        {/* Overlay for Time Range - Less obstructive */}
+        <div className="absolute top-2 left-2 px-2 py-1 bg-black/50 backdrop-blur-sm text-[9px] text-white font-mono tracking-tighter rounded border border-white/10">
           {scene.time_range}
         </div>
 
-        {/* Telop Preview in Image */}
-        <div className="absolute bottom-4 left-0 right-0 px-4 text-center">
-          <p className={`text-sm font-bold drop-shadow-lg inline-block px-2 py-0.5 rounded ${
-            scene.telop_style === TelopStyle.HIGHLIGHT ? 'bg-red-600 text-white' : 'bg-black/60 text-white'
+        {/* Telop Preview - Clearly separated */}
+        <div className="absolute bottom-3 left-0 right-0 px-3 text-center">
+          <p className={`text-[11px] font-bold drop-shadow-md inline-block px-3 py-1 rounded shadow-xl ${
+            scene.telop_style === TelopStyle.HIGHLIGHT ? 'bg-red-600/90 text-white' : 'bg-black/80 text-white'
           }`}>
             {scene.telop}
           </p>
@@ -80,8 +81,8 @@ const SceneCard: React.FC<SceneCardProps> = ({ scene, index, isGenerating, isAct
         </div>
 
         <div className="mt-6">
-          <label className="text-[10px] uppercase tracking-[0.2em] text-gray-500 mb-1 block opacity-60 italic">Prompt Instruction</label>
-          <p className="text-[11px] text-gray-500 font-mono bg-black/40 p-2 rounded line-clamp-2 hover:line-clamp-none transition-all cursor-default">
+          <label className="text-[10px] uppercase tracking-[0.2em] text-gray-500 mb-1 block opacity-60 italic">Visual Prompt</label>
+          <p className="text-[11px] text-gray-500 font-mono bg-black/40 p-2 rounded line-clamp-2 hover:line-clamp-none transition-all cursor-default border border-white/5">
             {scene.image_prompt}
           </p>
         </div>

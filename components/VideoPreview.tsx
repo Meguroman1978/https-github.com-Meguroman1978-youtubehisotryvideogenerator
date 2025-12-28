@@ -4,7 +4,6 @@ import { Storyboard, Scene, TelopStyle, YouTubeMetadata, YouTubeConfig } from '.
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
 
-// 著作権フリーのプリセットBGM
 const BGM_URLS = {
   epic: "https://cdn.pixabay.com/audio/2023/12/04/audio_92425f3898.mp3",
   sad: "https://cdn.pixabay.com/audio/2023/11/24/audio_349d970e7e.mp3",
@@ -29,17 +28,16 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [finalVideoBlob, setFinalVideoBlob] = useState<Blob | null>(null);
   const [ffmpegReady, setFfmpegReady] = useState(false);
+  const [sceneProgress, setSceneProgress] = useState(0); // For Ken Burns effect
 
   const ffmpegRef = useRef(new FFmpeg());
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  // Fix: Use any for Audio and Media types to avoid environment-specific type errors
   const audioContextRef = useRef<any>(null);
   const bgmBufferRef = useRef<any>(null);
   const audioDestinationRef = useRef<any>(null);
   const mediaRefs = useRef<(HTMLVideoElement | HTMLImageElement | null)[]>([]);
-  const recorderRef = useRef<any>(null);
-  const recordedChunksRef = useRef<Blob[]>([]);
   const animationFrameRef = useRef<number | null>(null);
+  const startTimeRef = useRef<number>(0);
 
   const [ytMeta, setYtMeta] = useState<YouTubeMetadata>({
     title: `${storyboard.subject}の衝撃的な真実`,
@@ -48,7 +46,6 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
     privacyStatus: 'private'
   });
 
-  // FFmpeg初期化 (WebWorker経由で高速処理)
   useEffect(() => {
     const loadFFmpeg = async () => {
       const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
@@ -61,7 +58,7 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
         setFfmpegReady(true);
       } catch (err) {
         console.error("FFmpeg load failed:", err);
-        setUploadStatus("映像エンジン(FFmpeg)の読み込みに失敗しました。再読み込みしてください。");
+        setUploadStatus("映像エンジンの読み込みに失敗しました。再試行してください。");
       }
     };
     loadFFmpeg();
@@ -70,7 +67,6 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
     };
   }, []);
 
-  // Fix: Use any casting for atob access
   const decodePCM = (base64: string, ctx: any) => {
     const binary = (window as any).atob(base64);
     const bytes = new Uint8Array(binary.length);
@@ -84,7 +80,6 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
 
   const initAudioEngine = async () => {
     if (!audioContextRef.current) {
-      // Fix: Use window.AudioContext and cast to avoid type issues
       const AudioCtx = (window as any).AudioContext || (window as any).webkitAudioContext;
       audioContextRef.current = new AudioCtx({ sampleRate: 44100 });
       audioDestinationRef.current = audioContextRef.current.createMediaStreamDestination();
@@ -92,7 +87,8 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
     if (audioContextRef.current.state === 'suspended') await audioContextRef.current.resume();
 
     if (!bgmBufferRef.current) {
-      const resp = await fetch(BGM_URLS[storyboard.bgm_style as keyof typeof BGM_URLS] || BGM_URLS.epic);
+      const bgmUrl = storyboard.customBgmUrl || BGM_URLS[storyboard.bgm_style as keyof typeof BGM_URLS] || BGM_URLS.epic;
+      const resp = await fetch(bgmUrl);
       const arrayBuffer = await resp.arrayBuffer();
       bgmBufferRef.current = await audioContextRef.current.decodeAudioData(arrayBuffer);
     }
@@ -108,15 +104,21 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
     return source;
   };
 
-  const playBGM = () => {
+  const playBGM = (totalDuration: number) => {
     if (!audioContextRef.current || !bgmBufferRef.current || !audioDestinationRef.current) return;
-    const source = audioContextRef.current.createBufferSource();
+    const ctx = audioContextRef.current;
+    const source = ctx.createBufferSource();
     source.buffer = bgmBufferRef.current;
     source.loop = true;
-    const gain = audioContextRef.current.createGain();
-    gain.gain.value = 0.12; 
+    const gain = ctx.createGain();
+    const volume = 0.12;
+    gain.gain.setValueAtTime(volume, ctx.currentTime);
+    if (totalDuration > 2) {
+      gain.gain.setValueAtTime(volume, ctx.currentTime + totalDuration - 2);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + totalDuration);
+    }
     source.connect(gain);
-    gain.connect(audioContextRef.current.destination);
+    gain.connect(ctx.destination);
     gain.connect(audioDestinationRef.current);
     source.start();
     return source;
@@ -126,19 +128,16 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
     if (!ffmpegReady || isExporting) return;
     setIsExporting(true);
     setExportStep("リソース読み込み中...");
-    setUploadStatus(null);
-    recordedChunksRef.current = [];
     
     try {
       await initAudioEngine();
-      const canvas = canvasRef.current;
+      // Cast to any to bypass potential environment-specific type missing properties like width/height
+      const canvas = canvasRef.current as any;
       if (!canvas) return;
       
-      // Fix: Cast canvas to any to access standard properties if types are missing
-      (canvas as any).width = 1080;
-      (canvas as any).height = 1920;
+      canvas.width = 1080;
+      canvas.height = 1920;
 
-      // Fix: Use any to access captureStream and MediaStream
       const videoStream = (canvas as any).captureStream(30);
       const audioStream = audioDestinationRef.current!.stream;
       const combinedStream = new (window as any).MediaStream([
@@ -146,47 +145,34 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
         ...audioStream.getAudioTracks()
       ]);
 
-      // Fix: Use window.MediaRecorder for construction
       const recorder = new (window as any).MediaRecorder(combinedStream, { mimeType: 'video/webm;codecs=vp9,opus' });
-      recorder.ondataavailable = (e: any) => { if (e.data.size > 0) recordedChunksRef.current.push(e.data); };
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = (e: any) => { if (e.data.size > 0) chunks.push(e.data); };
       
       recorder.onstop = async () => {
         setExportStep("高画質MP4へ変換中...");
-        const webmBlob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+        const webmBlob = new Blob(chunks, { type: 'video/webm' });
         const ffmpeg = ffmpegRef.current;
-        
         await ffmpeg.writeFile('input.webm', await fetchFile(webmBlob));
-        // libx264 + aac で標準的なプレイヤーでの再生互換性を確保
-        await ffmpeg.exec([
-          '-i', 'input.webm',
-          '-c:v', 'libx264',
-          '-preset', 'ultrafast',
-          '-crf', '22',
-          '-pix_fmt', 'yuv420p',
-          '-c:a', 'aac',
-          '-b:a', '128k',
-          'output.mp4'
-        ]);
-
+        await ffmpeg.exec(['-i', 'input.webm', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', 'output.mp4']);
         const data = await ffmpeg.readFile('output.mp4');
         const mp4Blob = new Blob([data], { type: 'video/mp4' });
         setFinalVideoBlob(mp4Blob);
-        
         const url = URL.createObjectURL(mp4Blob);
-        // Fix: Access document via window to avoid environment-specific type errors (Cannot find name 'document')
+        // Access document via window to ensure it's found in environment
         const a = (window as any).document.createElement('a');
         a.href = url;
         a.download = `${storyboard.subject}_final.mp4`;
         a.click();
-        
         setIsExporting(false);
         setExportStep("");
-        setUploadStatus("制作完了！ダウンロードを開始しました。");
+        setUploadStatus("制作完了！");
       };
 
+      const totalEstimatedDuration = 3.5 + storyboard.scenes.reduce((acc, s) => acc + (s.duration || 5) + 0.8, 0);
       recorder.start();
       setIsPlaying(true);
-      const bgmSource = playBGM();
+      const bgmSource = playBGM(totalEstimatedDuration);
       
       setExportStep("レンダリング・録画中...");
       setCurrentSceneIndex(-1); 
@@ -196,12 +182,12 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
 
       for (let i = 0; i < storyboard.scenes.length; i++) {
         setCurrentSceneIndex(i);
+        startTimeRef.current = performance.now();
         const scene = storyboard.scenes[i];
         const audioBuffer = decodePCM(scene.audioUrl!, audioContextRef.current!);
         const narration = playNarration(audioBuffer);
         
         const media = mediaRefs.current[i];
-        // Fix: Use property check instead of instanceof if HTMLVideoElement value is not available
         if (media && (media as any).tagName === 'VIDEO') {
           (media as any).currentTime = 0;
           (media as any).play().catch(() => {});
@@ -224,14 +210,16 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
   };
 
   const renderLoop = () => {
-    const canvas = canvasRef.current;
+    // Cast to any to bypass potential environment-specific type missing properties like getContext/width/height
+    const canvas = canvasRef.current as any;
     if (!canvas || !isPlaying) return;
-    // Fix: Cast canvas to any for context access
-    const ctx = (canvas as any).getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return;
 
-    ctx.fillStyle = '#050505';
-    ctx.fillRect(0, 0, (canvas as any).width, (canvas as any).height);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     if (currentSceneIndex === -1) {
       ctx.save();
@@ -241,24 +229,33 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
       ctx.font = 'bold 120px "Noto Serif JP"';
       ctx.shadowColor = 'rgba(0,0,0,0.8)';
       ctx.shadowBlur = 30;
-      ctx.fillText(storyboard.subject, (canvas as any).width / 2, (canvas as any).height / 2 - 100);
+      ctx.fillText(storyboard.subject, canvas.width / 2, canvas.height / 2 - 100);
       ctx.fillStyle = 'white';
       ctx.font = 'bold 80px "Noto Serif JP"';
-      ctx.fillText("の実は...", (canvas as any).width / 2, (canvas as any).height / 2 + 100);
+      ctx.fillText("の実は...", canvas.width / 2, canvas.height / 2 + 100);
       ctx.restore();
     } else if (currentSceneIndex >= 0) {
       const media = mediaRefs.current[currentSceneIndex];
       const scene = storyboard.scenes[currentSceneIndex];
       if (media) {
-        // Fix: Use any casting for width/height property access
         const vR = ((media as any).tagName === 'VIDEO' ? (media as any).videoWidth : (media as any).naturalWidth) || 1080;
         const vH = ((media as any).tagName === 'VIDEO' ? (media as any).videoHeight : (media as any).naturalHeight) || 1920;
-        const ratio = Math.max((canvas as any).width / vR, (canvas as any).height / vH);
-        const nw = vR * ratio;
-        const nh = vH * ratio;
-        ctx.drawImage(media, ((canvas as any).width - nw) / 2, ((canvas as any).height - nh) / 2, nw, nh);
+        const ratio = Math.max(canvas.width / vR, canvas.height / vH);
+        
+        // Ken Burns effect for static images or even videos
+        const elapsed = (performance.now() - startTimeRef.current) / 1000;
+        const duration = scene.duration || 5;
+        const progress = Math.min(elapsed / duration, 1);
+        const scale = 1.0 + (progress * 0.15); // Slight zoom in 1.0 -> 1.15
+        
+        const nw = vR * ratio * scale;
+        const nh = vH * ratio * scale;
+        
+        ctx.save();
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.drawImage(media, -nw / 2, -nh / 2, nw, nh);
+        ctx.restore();
 
-        // テロップ表示
         ctx.save();
         ctx.textAlign = 'center';
         ctx.font = 'bold 70px "Noto Serif JP"';
@@ -266,9 +263,9 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
         lines.forEach((line, i) => {
           const textWidth = ctx.measureText(line).width;
           ctx.fillStyle = scene.telop_style === TelopStyle.HIGHLIGHT ? 'rgba(180, 0, 0, 0.9)' : 'rgba(0, 0, 0, 0.8)';
-          ctx.fillRect(((canvas as any).width - textWidth - 60) / 2, (canvas as any).height * 0.75 + (i * 110), textWidth + 60, 100);
+          ctx.fillRect((canvas.width - textWidth - 60) / 2, canvas.height * 0.75 + (i * 110), textWidth + 60, 100);
           ctx.fillStyle = 'white';
-          ctx.fillText(line, (canvas as any).width / 2, (canvas as any).height * 0.75 + 75 + (i * 110));
+          ctx.fillText(line, canvas.width / 2, canvas.height * 0.75 + 75 + (i * 110));
         });
         ctx.restore();
       }
@@ -277,23 +274,15 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
   };
 
   const handleYouTubeUpload = async () => {
-    // Fix: Access localStorage via window with any casting
     const savedConfig = (window as any).localStorage.getItem('historian_yt_config');
     if (!savedConfig) {
-      setUploadStatus("設定(⚙️)から YouTube Client ID を登録してください。");
+      setUploadStatus("YouTube Client ID を登録してください。");
       return;
     }
     const { clientId } = JSON.parse(savedConfig) as YouTubeConfig;
-    if (!clientId) {
-      setUploadStatus("YouTube Client ID が未設定です。設定画面で入力してください。");
-      return;
-    }
+    if (!clientId) return;
 
-    if (!finalVideoBlob) {
-      setUploadStatus("先に「制作してMP4を保存」を実行して動画を生成してください。");
-      return;
-    }
-
+    if (!finalVideoBlob) return;
     setIsUploading(true);
     setUploadStatus("Google認証を実行中...");
 
@@ -303,60 +292,33 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
         scope: YOUTUBE_SCOPES,
         callback: async (tokenResp: any) => {
           if (tokenResp.error) {
-            setUploadStatus("認証エラーです。Client IDが正しいか、JavaScript生成元が許可されているか確認してください。");
+            setUploadStatus("認証エラーです。");
             setIsUploading(false);
             return;
           }
-
           const accessToken = tokenResp.access_token;
-          setUploadStatus("アップロード中 (Resumable Protocol)...");
-
+          setUploadStatus("アップロード中...");
           const metadata = {
-            snippet: {
-              title: ytMeta.title,
-              description: ytMeta.description,
-              tags: ytMeta.tags.split(',').map(s => s.trim()),
-              categoryId: '22'
-            },
+            snippet: { title: ytMeta.title, description: ytMeta.description, tags: ytMeta.tags.split(',').map(s => s.trim()), categoryId: '22' },
             status: { privacyStatus: ytMeta.privacyStatus }
           };
-
-          // Step 1: Resumable Upload のセッション開始
           const initResp = await fetch('https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status', {
             method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${accessToken}`,
-              'Content-Type': 'application/json; charset=UTF-8',
-              'X-Upload-Content-Length': finalVideoBlob.size.toString(),
-              'X-Upload-Content-Type': 'video/mp4'
-            },
+            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json; charset=UTF-8', 'X-Upload-Content-Length': finalVideoBlob.size.toString(), 'X-Upload-Content-Type': 'video/mp4' },
             body: JSON.stringify(metadata)
           });
-
           const uploadUrl = initResp.headers.get('Location');
-          if (!uploadUrl) throw new Error("YouTubeからのアップロード許可が下りませんでした。");
-
-          // Step 2: バイナリデータのアップロード
-          const uploadResp = await fetch(uploadUrl, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'video/mp4' },
-            body: finalVideoBlob
-          });
-
-          if (uploadResp.ok) {
-            setUploadStatus("YouTubeアップロード成功！公開まで数分かかる場合があります。");
-          } else {
-            const errData = await uploadResp.json();
-            setUploadStatus(`アップロード失敗: ${errData.error?.message || uploadResp.status}`);
-          }
+          if (!uploadUrl) throw new Error("Permission denied");
+          const uploadResp = await fetch(uploadUrl, { method: 'PUT', headers: { 'Content-Type': 'video/mp4' }, body: finalVideoBlob });
+          if (uploadResp.ok) setUploadStatus("YouTubeアップロード成功！");
+          else setUploadStatus(`失敗: ${uploadResp.status}`);
           setIsUploading(false);
         }
       });
       client.requestAccessToken();
     } catch (err: any) {
-      console.error(err);
       setIsUploading(false);
-      setUploadStatus(`例外エラー: ${err.message}`);
+      setUploadStatus(`エラー: ${err.message}`);
     }
   };
 
@@ -364,7 +326,6 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
     <div className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center p-4 backdrop-blur-xl overflow-y-auto">
       <canvas ref={canvasRef} className="hidden" />
       <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
-        {/* ショート動画プレビュー枠 */}
         <div className="relative aspect-[9/16] w-full max-w-[320px] mx-auto bg-black rounded-[2.5rem] overflow-hidden shadow-[0_0_50px_rgba(245,158,11,0.3)] border border-white/10">
           <div className="absolute inset-0">
             {currentSceneIndex === -1 ? (
@@ -376,10 +337,8 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
               storyboard.scenes.map((scene, idx) => (
                 <div key={idx} className={`absolute inset-0 transition-opacity duration-500 ${idx === currentSceneIndex ? 'opacity-100' : 'opacity-0'}`}>
                   {scene.videoUrl && !scene.videoUrl.includes('data:image') ? (
-                    // Fix: Ensure ref callback returns void
                     <video ref={(el) => { if (el) mediaRefs.current[idx] = el; }} src={scene.videoUrl} className="w-full h-full object-cover" muted playsInline />
                   ) : (
-                    // Fix: Ensure ref callback returns void
                     <img ref={(el) => { if (el) mediaRefs.current[idx] = el; }} src={scene.imageUrl} className="w-full h-full object-cover" />
                   )}
                 </div>
@@ -389,81 +348,48 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ storyboard, onClose }) => {
             )}
           </div>
           {isExporting && (
-             <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center gap-4 animate-in fade-in duration-300">
+             <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center gap-4">
                 <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent animate-spin rounded-full"></div>
                 <span className="text-white text-[10px] uppercase font-black tracking-widest text-center px-4">{exportStep}</span>
              </div>
           )}
         </div>
 
-        {/* コントロールパネル */}
         <div className="space-y-8 animate-in slide-in-from-right duration-500">
           <div>
             <span className="text-amber-500 text-[10px] font-black uppercase tracking-widest mb-2 block">Movie Production Mode</span>
             <h3 className="text-4xl font-serif-jp text-white mb-4 leading-tight">{storyboard.title}</h3>
-            <p className="text-gray-400 font-serif-jp italic leading-relaxed text-sm">
-              AIが生成した映像と音声をMP4へ完全合成します。このファイルはYouTubeショートやTikTokの仕様（9:16 / H.264）に最適化されています。
-            </p>
           </div>
 
           {!showUploadForm ? (
             <div className="grid gap-4">
-              <button 
-                onClick={startFullProduction} 
-                disabled={isExporting || !ffmpegReady} 
-                className="bg-white text-black font-black py-6 rounded-full text-center hover:bg-amber-500 transition-all flex items-center justify-center gap-3 disabled:opacity-30"
-              >
+              <button onClick={startFullProduction} disabled={isExporting || !ffmpegReady} className="bg-white text-black font-black py-6 rounded-full text-center hover:bg-amber-500 transition-all flex items-center justify-center gap-3 disabled:opacity-30">
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-                {isExporting ? "変換中..." : "制作してMP4を保存"}
+                {isExporting ? "制作中..." : "制作してMP4を保存"}
               </button>
-              <button 
-                onClick={() => setShowUploadForm(true)} 
-                className="bg-red-600 text-white font-black py-6 rounded-full text-center hover:bg-red-500 transition-all flex items-center justify-center gap-3 shadow-lg shadow-red-900/40"
-              >
-                <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z"/></svg>
+              <button onClick={() => setShowUploadForm(true)} className="bg-red-600 text-white font-black py-6 rounded-full text-center hover:bg-red-500 transition-all flex items-center justify-center gap-3">
                 YouTubeに投稿する
               </button>
               <button onClick={onClose} className="text-white/30 text-[10px] font-black uppercase tracking-widest mt-4 hover:text-white transition-all text-center">Studioを終了</button>
             </div>
           ) : (
-            <div className="bg-white/5 p-8 rounded-3xl border border-white/10 space-y-6 animate-in zoom-in-95">
-              <div className="flex justify-between items-center">
-                <h4 className="text-2xl font-serif-jp text-amber-500">Post to YouTube</h4>
-                <div className="h-2 w-2 rounded-full bg-red-600 animate-pulse"></div>
-              </div>
+            <div className="bg-white/5 p-8 rounded-3xl border border-white/10 space-y-6">
+              <h4 className="text-2xl font-serif-jp text-amber-500">Post to YouTube</h4>
               <div className="space-y-4">
-                <div className="space-y-1">
-                  <label className="text-[10px] text-gray-500 uppercase tracking-widest ml-1">動画タイトル</label>
-                  {/* Fix: Use any casting for target value to avoid type errors */}
-                  <input value={ytMeta.title} onChange={e => setYtMeta({...ytMeta, title: (e.target as any).value})} className="w-full bg-black/50 border border-white/10 p-4 rounded-xl text-white outline-none focus:border-red-600 font-serif-jp" />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] text-gray-500 uppercase tracking-widest ml-1">動画の説明欄</label>
-                  {/* Fix: Use any casting for target value to avoid type errors */}
-                  <textarea rows={3} value={ytMeta.description} onChange={e => setYtMeta({...ytMeta, description: (e.target as any).value})} className="w-full bg-black/50 border border-white/10 p-4 rounded-xl text-white outline-none focus:border-red-600 font-serif-jp text-xs leading-relaxed" />
-                </div>
+                <input value={ytMeta.title} onChange={e => setYtMeta({...ytMeta, title: (e.target as any).value})} className="w-full bg-black/50 border border-white/10 p-4 rounded-xl text-white font-serif-jp" placeholder="タイトル" />
+                <textarea rows={3} value={ytMeta.description} onChange={e => setYtMeta({...ytMeta, description: (e.target as any).value})} className="w-full bg-black/50 border border-white/10 p-4 rounded-xl text-white font-serif-jp text-xs" placeholder="説明欄" />
                 <div className="grid grid-cols-2 gap-4">
-                  {/* Fix: Use any casting for target value to avoid type errors */}
                   <select value={ytMeta.privacyStatus} onChange={e => setYtMeta({...ytMeta, privacyStatus: (e.target as any).value})} className="bg-black border border-white/10 p-4 rounded-xl text-white outline-none text-sm">
                     <option value="private">非公開</option>
                     <option value="unlisted">限定公開</option>
                     <option value="public">一般公開</option>
                   </select>
-                  <button 
-                    onClick={handleYouTubeUpload} 
-                    disabled={isUploading || !finalVideoBlob} 
-                    className="bg-red-600 text-white font-black rounded-xl hover:bg-red-500 transition-all disabled:opacity-20 uppercase tracking-widest text-[10px]"
-                  >
+                  <button onClick={handleYouTubeUpload} disabled={isUploading || !finalVideoBlob} className="bg-red-600 text-white font-black rounded-xl hover:bg-red-500 disabled:opacity-20 uppercase tracking-widest text-[10px]">
                     {isUploading ? "送信中..." : "アップロード"}
                   </button>
                 </div>
-                {!finalVideoBlob && <p className="text-[10px] text-amber-500/80 text-center italic">※アップロードにはMP4の生成が必要です</p>}
-                {uploadStatus && (
-                  <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-xl">
-                    <p className="text-[11px] text-amber-500 text-center font-bold leading-relaxed">{uploadStatus}</p>
-                  </div>
-                )}
-                <button onClick={() => setShowUploadForm(false)} className="text-gray-500 text-[10px] uppercase font-black block mx-auto pt-4 hover:text-white transition-all">戻る</button>
+                {uploadStatus && <p className="text-[11px] text-amber-500 text-center font-bold">{uploadStatus}</p>}
+                <button onClick={() => setShowUploadForm(false)} className="text-gray-500 text-[10px] uppercase font-black block mx-auto hover:text-white">戻る</button>
               </div>
             </div>
           )}

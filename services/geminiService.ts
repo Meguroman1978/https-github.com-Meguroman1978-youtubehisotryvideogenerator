@@ -16,9 +16,31 @@ const withRetry = async <T>(fn: () => Promise<T>, retries = 3, delay = 5000): Pr
   }
 };
 
+// 外部の無料画像生成ツールへのフォールバック
+const generateFallbackImage = async (prompt: string): Promise<string> => {
+  console.log("Gemini quota reached or error. Falling back to Pollinations AI...");
+  const seed = Math.floor(Math.random() * 1000000);
+  const encodedPrompt = encodeURIComponent(`${prompt}, high quality, cinematic, 9:16 aspect ratio`);
+  const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1080&height=1920&nologo=true&seed=${seed}&model=flux`;
+  
+  const response = await fetch(imageUrl);
+  const blob = await response.blob();
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.readAsDataURL(blob);
+  });
+};
+
 export const generateStoryboard = async (topic: string, visualStyle: VisualStyle): Promise<Storyboard> => {
   const ai = getAI();
-  const prompt = `Create a witty historical documentary storyboard about: ${topic}. EXACTLY 5 scenes. JSON only.`;
+  const prompt = `Create a witty historical documentary storyboard about: ${topic}. EXACTLY 5 scenes. Output ONLY JSON.
+  Instructions:
+  - Scenes should tell a cohesive story.
+  - Image prompts should be detailed.
+  - Narration should be engaging.
+  - telop_style must be 'default' or 'highlight'.
+  - bgm_style must be 'epic', 'sad', 'peaceful', or 'suspense'.`;
 
   const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
     model: 'gemini-3-flash-preview',
@@ -58,35 +80,48 @@ export const generateStoryboard = async (topic: string, visualStyle: VisualStyle
 };
 
 export const generateImageForScene = async (prompt: string, style: VisualStyle): Promise<string> => {
-  const ai = getAI();
-  const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-    model: 'gemini-2.5-flash-image',
-    contents: { parts: [{ text: prompt }] },
-    config: { imageConfig: { aspectRatio: "9:16" } }
-  }));
+  try {
+    const ai = getAI();
+    const response: GenerateContentResponse = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: { parts: [{ text: `${prompt}, style: ${style}` }] },
+      config: { imageConfig: { aspectRatio: "9:16" } }
+    });
 
-  const part = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-  if (part?.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
-  throw new Error("画像生成失敗");
+    const part = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+    if (part?.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
+    throw new Error("Gemini Image data missing");
+  } catch (error) {
+    console.error("Gemini Image generation failed:", error);
+    // クォータ制限やエラー時は代替ツールを使用
+    return await generateFallbackImage(prompt);
+  }
 };
 
 export const generateVideoForScene = async (base64Image: string, motionPrompt: string): Promise<string> => {
-  const ai = getAI();
-  const pureBase64 = base64Image.split(',')[1];
-  let operation: any = await withRetry(() => ai.models.generateVideos({
-    model: 'veo-3.1-fast-generate-preview',
-    prompt: motionPrompt,
-    image: { imageBytes: pureBase64, mimeType: 'image/png' },
-    config: { numberOfVideos: 1, resolution: '1080p', aspectRatio: '9:16' }
-  }));
-  while (!operation.done) {
-    await new Promise(resolve => setTimeout(resolve, 10000));
-    operation = await ai.operations.getVideosOperation({ operation: operation });
+  try {
+    const ai = getAI();
+    const pureBase64 = base64Image.split(',')[1];
+    let operation: any = await ai.models.generateVideos({
+      model: 'veo-3.1-fast-generate-preview',
+      prompt: motionPrompt,
+      image: { imageBytes: pureBase64, mimeType: 'image/png' },
+      config: { numberOfVideos: 1, resolution: '1080p', aspectRatio: '9:16' }
+    });
+    
+    while (!operation.done) {
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      operation = await ai.operations.getVideosOperation({ operation: operation });
+    }
+    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+    const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+    const blob = await response.blob();
+    return URL.createObjectURL(blob);
+  } catch (error) {
+    console.error("Veo generation failed, using static image as fallback:", error);
+    // 動画生成が失敗（クォータ制限等）した場合は、画像をそのまま返す（App.tsx側で対応）
+    throw error;
   }
-  const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-  const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
-  const blob = await response.blob();
-  return URL.createObjectURL(blob);
 };
 
 export const generateAudioForScene = async (text: string): Promise<{ audioUrl: string, duration: number }> => {
@@ -100,5 +135,7 @@ export const generateAudioForScene = async (text: string): Promise<{ audioUrl: s
     },
   }));
   const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-  return { audioUrl: base64Audio || "", duration: text.length * 0.2 };
+  // durationの概算（日本語の読み上げ速度に基づく）
+  const estimatedDuration = text.length * 0.25;
+  return { audioUrl: base64Audio || "", duration: estimatedDuration };
 };

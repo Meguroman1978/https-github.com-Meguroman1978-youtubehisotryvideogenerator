@@ -26,6 +26,7 @@ export interface Storyboard {
   bgm_style: 'epic' | 'sad' | 'peaceful' | 'suspense';
   visual_style: VisualStyle;
   scenes: Scene[];
+  customBgmUrl?: string; // ユーザーがアップロードしたBGM
 }
 
 export interface YouTubeMetadata {
