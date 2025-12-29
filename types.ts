@@ -18,6 +18,8 @@ export interface Scene {
   videoUrl?: string; 
   audioUrl?: string; 
   duration?: number;
+  estimatedCost?: number;
+  error?: string;
 }
 
 export interface Storyboard {
@@ -26,18 +28,8 @@ export interface Storyboard {
   bgm_style: 'epic' | 'sad' | 'peaceful' | 'suspense';
   visual_style: VisualStyle;
   scenes: Scene[];
-  customBgmUrl?: string; // ユーザーがアップロードしたBGM
-}
-
-export interface YouTubeMetadata {
-  title: string;
-  description: string;
-  tags: string;
-  privacyStatus: 'private' | 'unlisted' | 'public';
-}
-
-export interface YouTubeConfig {
-  clientId: string;
+  customBgmUrl?: string;
+  totalCost?: number;
 }
 
 export interface AppState {
@@ -54,4 +46,6 @@ export interface AppState {
   isApiKeySelected: boolean;
   productionMode: ProductionMode;
   visualStyle: VisualStyle;
+  sceneCount: number;
+  sceneDuration: number;
 }
